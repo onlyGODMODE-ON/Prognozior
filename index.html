@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>პროგნოზირება</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#161a22;color:#e5e7eb}
+  .wrap{max-width:920px;margin:0 auto;padding:16px}
+  .card{background:#222834;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 1px 4px #0006}
+  h1{font-size:18px;margin:0 0 12px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+  .row label{font-size:13px;color:#9aa4b5;min-width:170px}
+  input,textarea,select{font:inherit;padding:8px;border:1px solid #3b4252;border-radius:8px;background:#1a1f29;color:#e5e7eb;color-scheme:dark}
+  input[type=number]{width:90px}
+  textarea{width:100%;box-sizing:border-box;height:100px;font-family:monospace}
+  button{font:inherit;padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
+  button.sec{background:#5b6475}
+  canvas{width:100%;height:380px;display:block}
+  table{border-collapse:collapse;width:100%}
+  td,th{padding:5px 8px;border-bottom:1px solid #333b4a;text-align:left}
+  .muted{color:#9aa4b5;font-size:13px}
+  .err{color:#f87171;font-size:13px}
+  .up{color:#4ade80}.down{color:#f87171}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="card">
+    <h1>⚙️ პარამეტრები</h1>
+    <div class="row"><label>სწავლა ბოლო … მონაცემზე<br>(0 = ყველა მონაცემი)</label>
+      <input id="wv" type="number" min="0" step="any" value="3000" onchange="winChange()">
+      <select id="wu" onchange="winChange()"><option value="1">წუთი</option><option value="60">საათი</option><option value="1440" selected>დღე</option></select></div>
+    <div class="row"><label>პროგნოზის წერტილების რაოდენობა</label>
+      <input id="pn" type="number" min="1" max="100" value="1" oninput="run()"></div>
+    <div class="row"><label>ინტერვალი წერტილებს შორის</label>
+      <input id="sv" type="number" min="1" step="any" value="1" oninput="run()">
+      <select id="su" onchange="run()"><option value="1">წუთი</option><option value="60">საათი</option><option value="1440" selected>დღე</option></select></div>
+  </div>
+
+  <div class="card">
+    <h1>📡 ცოცხალი რეჟიმი (Binance)</h1>
+    <div class="row">
+      <select id="sym" onchange="restartIfLive()">
+        <option value="BTCUSDT">BTC / USDT</option><option value="ETHUSDT">ETH / USDT</option>
+        <option value="BNBUSDT">BNB / USDT</option><option value="SOLUSDT">SOL / USDT</option><option value="XRPUSDT">XRP / USDT</option>
+      </select>
+      <select id="iv" onchange="ivChange()">
+        <option value="1m">სანთელი: 1 წუთი</option><option value="5m">5 წუთი</option><option value="15m">15 წუთი</option>
+        <option value="1h">1 საათი</option><option value="4h">4 საათი</option><option value="1d" selected>1 დღე</option><option value="1w">1 კვირა</option>
+      </select>
+      <button id="livebtn" onclick="toggleLive()">▶ ჩართვა</button>
+      <span id="price" style="font-weight:600;font-size:18px"></span>
+    </div>
+    <div id="livemsg" class="muted">ჩართვისას ისტორიას ჩატვირთავს (ტრენინგის ფანჯრის მიხედვით) და ფასს ცოცხლად განაახლებს.</div>
+  </div>
+
+  <div class="card"><canvas id="c"></canvas>
+    <div class="muted">ლურჯი — მონაცემები, ნარინჯისფერი — პროგნოზი</div></div>
+
+  <div class="card"><h1>პროგნოზი</h1><div id="tbl" class="muted">ჯერ მონაცემები შეიყვანე.</div></div>
+
+  <div class="card">
+    <h1>✍️ ხელით შეყვანა</h1>
+    <div class="row">
+      <input id="t" type="datetime-local">
+      <input id="y" type="number" step="any" placeholder="y (რიცხვი)">
+      <button onclick="addOne()">დამატება</button>
+      <button class="sec" onclick="sample()">ნიმუში</button>
+      <button class="sec" onclick="clearAll()">გასუფთავება</button>
+    </div>
+    <p class="muted">ან ჩასვი ბევრი ერთად, თითო ხაზზე: <code>2025-01-31 3.2</code> ან <code>2025-01-31 14:05 3.2</code> ან <code>14:05 3.2</code> (დღევანდელი თარიღით)</p>
+    <textarea id="bulk" placeholder="2025-01-01 100&#10;2025-01-02 104.5&#10;2025-01-03 101"></textarea>
+    <div class="row" style="margin-top:8px"><button onclick="fromBulk()">დამატება და გამოთვლა</button></div>
+    <div id="msg" class="muted"></div>
+  </div>
+</div>
+
+<script>
+let data = []; // {t: epoch-წუთები, y}
+const $ = id => document.getElementById(id);
+const p2 = n => String(n).padStart(2,'0');
+const toMin = d => Math.floor(d.getTime()/60000);
+
+function fmt(t, mode){ // 'd' თარიღი | 'dt' თარიღი+დრო | 't' დრო
+  const d=new Date(t*60000), D=d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate()), T=p2(d.getHours())+':'+p2(d.getMinutes());
+  return mode==='d'?D : mode==='dt'?D.slice(5)+' '+T : T;
+}
+const toInput = t => { const d=new Date(t*60000); return d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate())+'T'+p2(d.getHours())+':'+p2(d.getMinutes()); };
+const fmtY = y => Math.abs(y)>=1000 ? y.toFixed(2) : Math.abs(y)>=1 ? y.toFixed(3) : y.toFixed(5);
+const getStep = () => Math.max(1,(+$('sv').value||1)*(+$('su').value));
+const getWin  = () => Math.max(0,(+$('wv').value||0)*(+$('wu').value));
+const getN    = () => Math.min(100,Math.max(1,parseInt($('pn').value)||10));
+const say = (s,e) => { const m=$('msg'); m.textContent=s; m.className=e?'err':'muted'; };
+
+function parseLine(s){
+  s=s.trim();
+  let m=s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?[\s,;]+(-?\d+(?:[.,]\d+)?)$/);
+  if(m) return {t:toMin(new Date(+m[1],m[2]-1,+m[3],+(m[4]||0),+(m[5]||0))), y:parseFloat(m[6].replace(',','.'))};
+  m=s.match(/^(\d{1,2}):(\d{2})[\s,;]+(-?\d+(?:[.,]\d+)?)$/);
+  if(m){ const n=new Date(); return {t:toMin(new Date(n.getFullYear(),n.getMonth(),n.getDate(),+m[1],+m[2])), y:parseFloat(m[3].replace(',','.'))}; }
+  return null;
+}
+function addOne(){
+  stopLive();
+  const tv=$('t').value, yv=$('y').value;
+  if(!tv||yv==='') return say('შეავსე თარიღი/დრო და y',true);
+  const t=toMin(new Date(tv)); data.push({t,y:parseFloat(yv)});
+  $('t').value=toInput(t+getStep()); $('y').value=''; run();
+}
+function fromBulk(){
+  stopLive();
+  let bad=0; for(const l of $('bulk').value.split('\n').filter(l=>l.trim())){ const p=parseLine(l); p?data.push(p):bad++; }
+  $('bulk').value=''; run(bad?bad+' ხაზი ვერ ამოვიკითხე':'');
+}
+function sample(){
+  stopLive(); data=[]; const step=getStep(), end=toMin(new Date());
+  for(let i=0;i<60;i++) data.push({t:end-(59-i)*step, y:100+10*Math.sin(i/6)+i*0.3+(Math.random()-.5)*2});
+  run();
+}
+function clearAll(){ stopLive(); data=[]; run(); }
+
+// ---------- ალგორითმი: შეწონილი რიჯ-პოლინომიური რეგრესია ----------
+function solve(A,b){
+  const n=b.length;
+  for(let i=0;i<n;i++){
+    let p=i; for(let r=i+1;r<n;r++) if(Math.abs(A[r][i])>Math.abs(A[p][i])) p=r;
+    [A[i],A[p]]=[A[p],A[i]]; [b[i],b[p]]=[b[p],b[i]];
+    const d=A[i][i]||1e-12;
+    for(let r=i+1;r<n;r++){ const f=A[r][i]/d; for(let c=i;c<n;c++) A[r][c]-=f*A[i][c]; b[r]-=f*b[i]; }
+  }
+  const x=Array(n).fill(0);
+  for(let i=n-1;i>=0;i--){ let s=b[i]; for(let c=i+1;c<n;c++) s-=A[i][c]*x[c]; x[i]=s/(A[i][i]||1e-12); }
+  return x;
+}
+function fit(xs,ys,ws,deg){
+  const k=deg+1, A=Array.from({length:k},()=>Array(k).fill(0)), b=Array(k).fill(0);
+  xs.forEach((x,i)=>{ const pw=[1]; for(let j=1;j<k;j++) pw[j]=pw[j-1]*x;
+    for(let r=0;r<k;r++){ b[r]+=ws[i]*pw[r]*ys[i]; for(let c=0;c<k;c++) A[r][c]+=ws[i]*pw[r]*pw[c]; } });
+  for(let r=0;r<k;r++) A[r][r]+=1e-3;
+  return solve(A,b);
+}
+const evalP=(co,x)=>co.reduce((s,c,j)=>s+c*Math.pow(x,j),0);
+
+function forecast(pts,win,N,step){
+  let s=[...pts].sort((a,b)=>a.t-b.t);
+  const T=s[s.length-1].t;
+  if(win>0) s=s.filter(p=>p.t>=T-win);
+  if(s.length<2) return null;
+  const span=Math.max(T-s[0].t,1), n=s.length;
+  const xs=s.map(p=>(p.t-T)/span), ys=s.map(p=>p.y), ws=xs.map(x=>Math.exp(x*2));
+  const maxDeg=Math.min(4,n-1), hold=Math.max(1,Math.floor(n/4));
+  let best={deg:1,err:Infinity};
+  for(let d=1;d<=maxDeg;d++){
+    let err=0,cnt=0;
+    for(let h=hold;h>=1;h--){ const m=n-h; if(m<d+1) continue;
+      const co=fit(xs.slice(0,m),ys.slice(0,m),ws.slice(0,m),d), e=evalP(co,xs[m])-ys[m]; err+=e*e; cnt++; }
+    if(cnt&&err/cnt<best.err) best={deg:d,err:err/cnt};
+  }
+  const deg=n<3?1:Math.min(best.deg,maxDeg), co=fit(xs,ys,ws,deg);
+  const ymin=Math.min(...ys), ymax=Math.max(...ys), rg=(ymax-ymin)||Math.abs(ymax)*0.01||1, pred=[];
+  for(let i=1;i<=N;i++){
+    let y=evalP(co,i*step/span);
+    y=Math.max(ymin-.5*rg,Math.min(ymax+.5*rg,y));
+    pred.push({t:T+i*step,y});
+  }
+  return {sorted:s,pred,deg,T,span,used:n};
+}
+
+// ---------- ხატვა ----------
+function draw(res,step){
+  const cv=$('c'), dpr=devicePixelRatio||1, W=cv.clientWidth, H=cv.clientHeight;
+  cv.width=W*dpr; cv.height=H*dpr; const g=cv.getContext('2d'); g.scale(dpr,dpr); g.clearRect(0,0,W,H);
+  if(!res){ g.fillStyle='#9aa4b5'; g.font='14px sans-serif'; g.fillText('მონაცემები არ არის',20,30); return; }
+  const all=[...res.sorted,...res.pred], L=62,R=15,T=15,B=35;
+  let x0=Math.min(...all.map(p=>p.t)), x1=Math.max(...all.map(p=>p.t));
+  let y0=Math.min(...all.map(p=>p.y)), y1=Math.max(...all.map(p=>p.y));
+  if(x1===x0) x1=x0+1; const pad=((y1-y0)||Math.abs(y1)*0.01||1)*.1; y0-=pad; y1+=pad;
+  const X=t=>L+(t-x0)/(x1-x0)*(W-L-R), Y=y=>H-B-(y-y0)/(y1-y0)*(H-T-B);
+  const mode = step>=1440 ? 'd' : (x1-x0>=1440 ? 'dt' : 't');
+  const dig = (y1-y0)<1?4:(y1-y0)<10?2:(y1-y0)<1000?1:0;
+  g.font='11px sans-serif'; g.lineWidth=1;
+  for(let i=0;i<=5;i++){ const yy=y0+(y1-y0)*i/5; g.strokeStyle='#343c4b'; g.fillStyle='#9aa4b5';
+    g.beginPath(); g.moveTo(L,Y(yy)); g.lineTo(W-R,Y(yy)); g.stroke(); g.fillText(yy.toFixed(dig),4,Y(yy)+4); }
+  const ticks=W<500?3:6;
+  for(let i=0;i<=ticks;i++){ const tt=x0+(x1-x0)*i/ticks; g.fillStyle='#9aa4b5'; g.fillText(fmt(tt,mode),Math.min(X(tt)-16,W-70),H-12); }
+  g.setLineDash([4,4]); g.strokeStyle='#6b7486'; g.beginPath(); g.moveTo(X(res.T),T); g.lineTo(X(res.T),H-B); g.stroke(); g.setLineDash([]);
+  g.strokeStyle='#60a5fa'; g.fillStyle='#60a5fa'; g.lineWidth=2; g.beginPath();
+  res.sorted.forEach((p,i)=>i?g.lineTo(X(p.t),Y(p.y)):g.moveTo(X(p.t),Y(p.y))); g.stroke();
+  if(res.sorted.length<150) res.sorted.forEach(p=>{g.beginPath();g.arc(X(p.t),Y(p.y),3,0,7);g.fill();});
+  const last=res.sorted[res.sorted.length-1];
+  g.strokeStyle='#f97316'; g.fillStyle='#f97316'; g.setLineDash([6,4]); g.beginPath(); g.moveTo(X(last.t),Y(last.y));
+  res.pred.forEach(p=>g.lineTo(X(p.t),Y(p.y))); g.stroke(); g.setLineDash([]);
+  res.pred.forEach(p=>{g.beginPath();g.arc(X(p.t),Y(p.y),4,0,7);g.fill();});
+}
+
+function run(note){
+  const win=getWin(), N=getN(), step=getStep(), tb=$('tbl');
+  const res = data.length>=2 ? forecast(data,win,N,step) : null;
+  if(!res){ draw(null,step); tb.textContent='საჭიროა მინიმუმ 2 წერტილი (ტრენინგის ფანჯრის ფარგლებში).'; say(note||'',false); return; }
+  let msg=`სწავლაში მონაწილეობს: ${res.used}/${data.length} წერტილი · მოდელი: პოლინომი, ხარისხი ${res.deg}`;
+  if(N*step>res.span) msg+=' · ⚠️ პროგნოზის ჰორიზონტი სწავლის პერიოდზე გრძელია, სანდოობა დაბალია';
+  say((note?note+' · ':'')+msg, false);
+  draw(res,step);
+  const last=res.sorted[res.sorted.length-1].y, full=step<1440;
+  tb.innerHTML='<table><tr><th>#</th><th>'+(full?'თარიღი და დრო':'თარიღი')+'</th><th>y</th><th>ცვლილება ბოლოსთან</th></tr>'+
+    res.pred.map((p,i)=>{ const d=p.y-last, pc=last?d/Math.abs(last)*100:0, c=d>=0?'up':'down';
+      return `<tr><td>${i+1}</td><td>${fmt(p.t,full?'dt':'d')}</td><td>${fmtY(p.y)}</td><td class="${c}">${d>=0?'+':''}${fmtY(d)} (${pc.toFixed(2)}%)</td></tr>`; }).join('')+'</table>';
+}
+
+// ---------- ცოცხალი რეჟიმი ----------
+const IV={'1m':1,'5m':5,'15m':15,'1h':60,'4h':240,'1d':1440,'1w':10080};
+let ws=null, live=false, pend=null;
+const lm=(t,e)=>{const m=$('livemsg'); m.textContent=t; m.className=e?'err':'muted';};
+const schedule=()=>{ if(pend) return; pend=setTimeout(()=>{pend=null; run();},1000); };
+function toggleLive(){ live?stopLive():startLive(); }
+function stopLive(){
+  const was=live; live=false;
+  if(ws){ ws.onclose=null; ws.close(); ws=null; }
+  $('livebtn').textContent='▶ ჩართვა'; if(was) lm('ცოცხალი რეჟიმი გამორთულია.');
+}
+function restartIfLive(){ if(live){ stopLive(); startLive(); } }
+function ivChange(){ // ნაბიჯი ავტომატურად სანთლის ზომას მივუსადაგოთ
+  const m=IV[$('iv').value];
+  if(m>=1440){ $('sv').value=m/1440; $('su').value=1440; } else if(m>=60){ $('sv').value=m/60; $('su').value=60; } else { $('sv').value=m; $('su').value=1; }
+  restartIfLive(); run();
+}
+function winChange(){ restartIfLive(); run(); }
+async function startLive(){
+  const sym=$('sym').value, iv=$('iv').value, imin=IV[iv], win=getWin();
+  const limit=win>0?Math.min(1000,Math.max(3,Math.ceil(win/imin)+1)):200;
+  lm('იტვირთება...');
+  try{
+    const r=await fetch('https://api.binance.com/api/v3/klines?symbol='+sym+'&interval='+iv+'&limit='+limit);
+    if(!r.ok) throw new Error(r.status);
+    data=(await r.json()).map(c=>({t:Math.floor(c[0]/60000), y:parseFloat(c[4])}));
+  }catch(e){ lm('ისტორიის ჩატვირთვა ვერ მოხერხდა. შეამოწმე ინტერნეტი (Binance შეიძლება შენს რეგიონში იყოს შეზღუდული).',true); return; }
+  live=true; $('livebtn').textContent='⏸ გამორთვა';
+  const open=()=>{
+    ws=new WebSocket('wss://stream.binance.com:9443/ws/'+sym.toLowerCase()+'@kline_'+iv);
+    ws.onopen=()=>lm('🟢 დაკავშირებულია — '+sym+' ('+iv+') განახლდება რეალურ დროში.');
+    ws.onmessage=ev=>{
+      const k=JSON.parse(ev.data).k; if(!k) return;
+      const t=Math.floor(k.t/60000), y=parseFloat(k.c), l=data[data.length-1];
+      if(l&&l.t===t) l.y=y; else if(!l||t>l.t){ data.push({t,y}); if(data.length>1000) data.shift(); }
+      $('price').textContent=y.toLocaleString('en-US',{maximumFractionDigits:6}); schedule();
+    };
+    ws.onclose=()=>{ if(live){ lm('კავშირი გაწყდა, ვცდილობ თავიდან...',true); setTimeout(()=>{ if(live) open(); },2000); } };
+    ws.onerror=()=>{ try{ws.close();}catch(e){} };
+  };
+  open(); run();
+}
+
+$('t').value=toInput(toMin(new Date()));
+addEventListener('resize',()=>run());
+run();
+
+</script>
+</body>
+</html>
